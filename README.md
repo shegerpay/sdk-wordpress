@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="ShegerPay" width="200" /></p>
+
 # ShegerPay WooCommerce Plugin
 
 Accept Ethiopian bank payments (CBE, Telebirr, BOA, Awash) in your WooCommerce store — automatic verification, no manual checking.

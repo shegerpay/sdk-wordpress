@@ -18,6 +18,7 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
         $this->description  = $this->get_option('description', 'Pay via CBE, Telebirr, BOA, or Awash. Enter your transaction ID after payment.');
         $this->api_key      = $this->get_option('api_key');
         $this->test_mode    = 'yes' === $this->get_option('test_mode', 'no');
+        $this->enable_promos = 'yes' === $this->get_option('enable_promos', 'no');
         $this->instructions = $this->get_option('instructions');
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
@@ -53,6 +54,13 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
                 'label'   => 'Enable test mode',
                 'default' => 'yes',
             ],
+            'enable_promos' => [
+                'title'       => 'ShegerPay Promo Codes',
+                'type'        => 'checkbox',
+                'label'       => 'Allow customers to enter ShegerPay promo codes',
+                'description' => 'Uses your secret API key server-side to validate before verification and redeem once after a verified payment. WooCommerce coupons still work normally.',
+                'default'     => 'no',
+            ],
             'instructions' => [
                 'title'       => 'Payment Instructions',
                 'type'        => 'textarea',
@@ -77,10 +85,17 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
         echo '<input id="shegerpay_transaction_id" name="shegerpay_transaction_id" type="text" placeholder="e.g. FT26062K7WMY or AB12CD34EF" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" />';
         echo '<small style="color:#666;">' . esc_html__('Enter the transaction reference from your bank/Telebirr receipt.', 'shegerpay-woocommerce') . '</small>';
         echo '</div>';
+        if ($this->enable_promos) {
+            echo '<div class="form-row form-row-wide">';
+            echo '<label>' . esc_html__('ShegerPay Promo Code', 'shegerpay-woocommerce') . '</label>';
+            echo '<input id="shegerpay_promo_code" name="shegerpay_promo_code" type="text" placeholder="SAVE20" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;text-transform:uppercase;" />';
+            echo '<small style="color:#666;">' . esc_html__('Optional. The store verifies the final discounted amount with ShegerPay.', 'shegerpay-woocommerce') . '</small>';
+            echo '</div>';
+        }
     }
 
     public function validate_fields(): bool {
-        if (empty($_POST['shegerpay_transaction_id'])) {
+        if (empty($_POST['shegerpay_transaction_id'] ?? '')) {
             wc_add_notice(__('Please enter your Transaction ID.', 'shegerpay-woocommerce'), 'error');
             return false;
         }
@@ -90,6 +105,7 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
     public function process_payment($order_id): array {
         $order          = wc_get_order($order_id);
         $transaction_id = sanitize_text_field($_POST['shegerpay_transaction_id'] ?? '');
+        $promo_code     = strtoupper(sanitize_text_field($_POST['shegerpay_promo_code'] ?? ''));
         $amount         = (float) $order->get_total();
 
         if (empty($transaction_id)) {
@@ -103,8 +119,18 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
         }
 
         try {
-            $api    = new ShegerPay_API($this->api_key);
-            $result = $api->verify($transaction_id, $amount);
+            $api    = new ShegerPay_API($this->api_key, $this->test_mode);
+            $verified_amount = $amount;
+            $promo_result = null;
+            if ($this->enable_promos && !empty($promo_code)) {
+                $promo_result = $api->validate_promo_code($promo_code, $amount, $order->get_billing_email());
+                if (empty($promo_result['valid']) && empty($promo_result['ok'])) {
+                    wc_add_notice(__('Promo code is not valid for this order.', 'shegerpay-woocommerce'), 'error');
+                    return ['result' => 'failure'];
+                }
+                $verified_amount = (float) ($promo_result['discounted_amount'] ?? $amount);
+            }
+            $result = $api->verify($transaction_id, $verified_amount);
 
             $is_verified = ($result['verified'] ?? false) || ($result['status'] ?? '') === 'verified' || ($result['valid'] ?? false);
 
@@ -114,8 +140,21 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
                     'ShegerPay: Payment verified. TX: %s, Provider: %s, Amount: %.2f ETB',
                     $transaction_id,
                     $result['provider'] ?? 'unknown',
-                    $result['amount'] ?? $amount
+                    $result['amount'] ?? $verified_amount
                 ));
+                if ($promo_result && !empty($promo_code)) {
+                    try {
+                        $api->redeem_promo_code($promo_code, $amount, $transaction_id, (string) $order_id, $order->get_billing_email());
+                        $order->add_order_note(sprintf(
+                            'ShegerPay promo applied: %s. Gross: %.2f ETB, verified discounted amount: %.2f ETB.',
+                            $promo_code,
+                            $amount,
+                            $verified_amount
+                        ));
+                    } catch (Exception $promo_error) {
+                        $order->add_order_note('ShegerPay promo redeem warning: ' . $promo_error->getMessage());
+                    }
+                }
                 WC()->cart->empty_cart();
                 return [
                     'result'   => 'success',

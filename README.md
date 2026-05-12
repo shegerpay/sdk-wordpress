@@ -44,5 +44,5 @@ CBE · Telebirr · BOA (Bank of Abyssinia) · Awash Bank
 
 ## Support
 - Docs: https://shegerpay.com/docs
-- Telegram: https://t.me/shegerpay0
+- Telegram: https://t.me/shegerpay_0
 - Email: support@shegerpay.com

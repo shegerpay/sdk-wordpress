@@ -17,7 +17,7 @@ ShegerPay for WooCommerce lets Ethiopian merchants accept payments from:
 * **BOA** (Bank of Abyssinia)
 * **Awash Bank**
 
-Customers transfer to your bank account, enter their Transaction ID at checkout, and ShegerPay automatically verifies it in real-time.
+Customers transfer to your bank account, choose their provider, enter a Transaction ID/SMS/slip URL or upload a receipt image/PDF, and ShegerPay automatically verifies it in real-time.
 
 **No redirect. No third-party checkout. Payments stay in your bank.**
 
@@ -25,9 +25,10 @@ Customers transfer to your bank account, enter their Transaction ID at checkout,
 
 1. Customer selects "Pay with Ethiopian Bank" at checkout
 2. They transfer the exact amount to your bank account
-3. They enter their Transaction ID (e.g. FT26062K7WMY)
-4. ShegerPay verifies the payment automatically
-5. Order is confirmed instantly
+3. They choose provider and submit proof. BOA also requires sender account.
+4. Optional ShegerPay promo code is validated server-side before verification
+5. ShegerPay verifies the payment automatically and redeems the promo once
+6. Order is confirmed instantly
 
 = Requirements =
 
@@ -58,10 +59,15 @@ Yes. Enable test mode in settings and use test API keys (sk_test_...).
 = Which banks are supported? =
 CBE (Commercial Bank of Ethiopia), Telebirr (Ethio Telecom), BOA (Bank of Abyssinia), and Awash Bank.
 
+= Does receipt upload work? =
+Yes. The checkout accepts image/PDF receipt uploads and sends them to ShegerPay OCR. Typed transaction ID can be left empty when a supported receipt image/PDF is uploaded.
+
 == Changelog ==
 
 = 1.0.0 =
 * Initial release
 * CBE, Telebirr, BOA, Awash verification
+* Provider selection, BOA sender account, receipt image/PDF OCR
+* ShegerPay promo-code validation and idempotent redemption
 * WooCommerce HPOS compatible
 * Test mode support

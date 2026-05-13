@@ -23,6 +23,7 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
 
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, [$this, 'process_admin_options']);
         add_action('woocommerce_thankyou_' . $this->id, [$this, 'thankyou_page']);
+        add_filter('woocommerce_checkout_form_tag', [$this, 'add_checkout_form_enctype']);
     }
 
     public function init_form_fields() {
@@ -81,9 +82,37 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
             echo '</div>';
         }
         echo '<div class="form-row form-row-wide">';
-        echo '<label>' . esc_html__('Transaction ID', 'shegerpay-woocommerce') . ' <span class="required">*</span></label>';
-        echo '<input id="shegerpay_transaction_id" name="shegerpay_transaction_id" type="text" placeholder="e.g. FT26062K7WMY or AB12CD34EF" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" />';
-        echo '<small style="color:#666;">' . esc_html__('Enter the transaction reference from your bank/Telebirr receipt.', 'shegerpay-woocommerce') . '</small>';
+        echo '<label>' . esc_html__('Payment Method', 'shegerpay-woocommerce') . ' <span class="required">*</span></label>';
+        echo '<select id="shegerpay_provider" name="shegerpay_provider" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;">';
+        $providers = [
+            'cbe' => 'CBE',
+            'telebirr' => 'Telebirr',
+            'boa' => 'Bank of Abyssinia',
+            'awash' => 'Awash',
+            'dashen' => 'Dashen',
+            'ebirr' => 'eBirr',
+        ];
+        foreach ($providers as $value => $label) {
+            echo '<option value="' . esc_attr($value) . '">' . esc_html($label) . '</option>';
+        }
+        echo '</select>';
+        echo '</div>';
+
+        echo '<div class="form-row form-row-wide">';
+        echo '<label>' . esc_html__('Transaction ID, SMS text, or receipt link', 'shegerpay-woocommerce') . '</label>';
+        echo '<input id="shegerpay_transaction_id" name="shegerpay_transaction_id" type="text" placeholder="e.g. FT26062K7WMY, Telebirr ref, BOA slip URL, or full SMS" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" />';
+        echo '<small style="color:#666;">' . esc_html__('You can enter proof here or upload a receipt below. BOA also needs sender account.', 'shegerpay-woocommerce') . '</small>';
+        echo '</div>';
+
+        echo '<div class="form-row form-row-wide">';
+        echo '<label>' . esc_html__('Sender Account (BOA only)', 'shegerpay-woocommerce') . '</label>';
+        echo '<input id="shegerpay_sender_account" name="shegerpay_sender_account" type="text" placeholder="Sender account used to pay" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;" />';
+        echo '</div>';
+
+        echo '<div class="form-row form-row-wide">';
+        echo '<label>' . esc_html__('Receipt Image/PDF', 'shegerpay-woocommerce') . '</label>';
+        echo '<input id="shegerpay_receipt_file" name="shegerpay_receipt_file" type="file" accept="image/*,.pdf" />';
+        echo '<small style="color:#666;display:block;">' . esc_html__('Optional OCR proof. If uploaded, transaction ID can be left empty for supported providers.', 'shegerpay-woocommerce') . '</small>';
         echo '</div>';
         if ($this->enable_promos) {
             echo '<div class="form-row form-row-wide">';
@@ -95,21 +124,42 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
     }
 
     public function validate_fields(): bool {
-        if (empty($_POST['shegerpay_transaction_id'] ?? '')) {
-            wc_add_notice(__('Please enter your Transaction ID.', 'shegerpay-woocommerce'), 'error');
+        $transaction_id = trim((string) ($_POST['shegerpay_transaction_id'] ?? ''));
+        $provider = sanitize_text_field($_POST['shegerpay_provider'] ?? '');
+        $has_file = !empty($_FILES['shegerpay_receipt_file']['tmp_name'] ?? '');
+        if (empty($provider)) {
+            wc_add_notice(__('Please choose a ShegerPay payment method.', 'shegerpay-woocommerce'), 'error');
+            return false;
+        }
+        if ($provider === 'boa' && empty($_POST['shegerpay_sender_account'] ?? '')) {
+            wc_add_notice(__('BOA payments require the sender account number.', 'shegerpay-woocommerce'), 'error');
+            return false;
+        }
+        if ($transaction_id === '' && !$has_file) {
+            wc_add_notice(__('Please enter a transaction proof or upload the receipt image/PDF.', 'shegerpay-woocommerce'), 'error');
             return false;
         }
         return true;
     }
 
+    public function add_checkout_form_enctype($form_tag) {
+        if (false === strpos($form_tag, 'enctype=')) {
+            $form_tag = str_replace('<form', '<form enctype="multipart/form-data"', $form_tag);
+        }
+        return $form_tag;
+    }
+
     public function process_payment($order_id): array {
         $order          = wc_get_order($order_id);
         $transaction_id = sanitize_text_field($_POST['shegerpay_transaction_id'] ?? '');
+        $provider       = sanitize_text_field($_POST['shegerpay_provider'] ?? '');
+        $sender_account = sanitize_text_field($_POST['shegerpay_sender_account'] ?? '');
         $promo_code     = strtoupper(sanitize_text_field($_POST['shegerpay_promo_code'] ?? ''));
         $amount         = (float) $order->get_total();
+        $receipt_file   = $_FILES['shegerpay_receipt_file']['tmp_name'] ?? '';
 
-        if (empty($transaction_id)) {
-            wc_add_notice(__('Transaction ID is required.', 'shegerpay-woocommerce'), 'error');
+        if (empty($transaction_id) && empty($receipt_file)) {
+            wc_add_notice(__('Transaction proof or receipt upload is required.', 'shegerpay-woocommerce'), 'error');
             return ['result' => 'failure'];
         }
 
@@ -123,28 +173,34 @@ class WC_ShegerPay_Gateway extends WC_Payment_Gateway {
             $verified_amount = $amount;
             $promo_result = null;
             if ($this->enable_promos && !empty($promo_code)) {
-                $promo_result = $api->validate_promo_code($promo_code, $amount, $order->get_billing_email());
+                $promo_result = $api->validate_promo_code($promo_code, $amount, $order->get_billing_email(), $provider);
                 if (empty($promo_result['valid']) && empty($promo_result['ok'])) {
                     wc_add_notice(__('Promo code is not valid for this order.', 'shegerpay-woocommerce'), 'error');
                     return ['result' => 'failure'];
                 }
                 $verified_amount = (float) ($promo_result['discounted_amount'] ?? $amount);
             }
-            $result = $api->verify($transaction_id, $verified_amount);
+            if (!empty($receipt_file)) {
+                $result = $api->verify_image_file($receipt_file, $verified_amount, $provider, $transaction_id, $sender_account);
+            } else {
+                $result = $api->verify($transaction_id, $verified_amount, $provider, $sender_account);
+            }
 
             $is_verified = ($result['verified'] ?? false) || ($result['status'] ?? '') === 'verified' || ($result['valid'] ?? false);
 
             if ($is_verified) {
-                $order->payment_complete($transaction_id);
+                $verified_tx = $result['transaction_id'] ?? $transaction_id ?: ('shegerpay-' . $order_id);
+                $order->payment_complete($verified_tx);
                 $order->add_order_note(sprintf(
                     'ShegerPay: Payment verified. TX: %s, Provider: %s, Amount: %.2f ETB',
-                    $transaction_id,
-                    $result['provider'] ?? 'unknown',
+                    $verified_tx,
+                    $result['provider'] ?? $provider ?: 'unknown',
                     $result['amount'] ?? $verified_amount
                 ));
                 if ($promo_result && !empty($promo_code)) {
                     try {
-                        $api->redeem_promo_code($promo_code, $amount, $transaction_id, (string) $order_id, $order->get_billing_email());
+                        $redeem_tx = $result['transaction_id'] ?? $transaction_id ?: ('woo-' . $order_id);
+                        $api->redeem_promo_code($promo_code, $amount, $redeem_tx, (string) $order_id, $order->get_billing_email(), $provider);
                         $order->add_order_note(sprintf(
                             'ShegerPay promo applied: %s. Gross: %.2f ETB, verified discounted amount: %.2f ETB.',
                             $promo_code,
